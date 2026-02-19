@@ -38,15 +38,8 @@ if [[ -z "${POSEIDON_LOGGER_PATH:-}" ]]; then
 fi
 mkdir -p "${POSEIDON_LOGGER_PATH}"
 
-# If a dedicated "fake sonar" serial adapter exists, use it as the sonar source for this run.
-# This avoids touching /dev/sonar and makes /depth deterministic for E2E.
-if [[ -z "${POSEIDON_SONAR_DEVICE:-}" ]]; then
-  if [[ -n "${DIAGNOSTICS_FAKE_SERIAL_PORT:-}" && -e "${DIAGNOSTICS_FAKE_SERIAL_PORT}" && "${DIAGNOSTICS_FAKE_SERIAL_PORT}" != "/dev/sonar" ]]; then
-    export POSEIDON_SONAR_DEVICE="${DIAGNOSTICS_FAKE_SERIAL_PORT}"
-  else
-    export POSEIDON_SONAR_DEVICE="/dev/sonar"
-  fi
-fi
+# The E2E now expects a real or externally simulated sonar device.
+export POSEIDON_SONAR_DEVICE="${POSEIDON_SONAR_DEVICE:-/dev/sonar}"
 
 HTTP_LOG="${POSEIDON_E2E_ARTIFACT_DIR}/http.log"
 SERVICE_LOG="${POSEIDON_E2E_ARTIFACT_DIR}/launchROSService.log"
@@ -69,11 +62,6 @@ cleanup() {
   if [[ -n "${HTTP_PID:-}" ]] && kill -0 "${HTTP_PID}" 2>/dev/null; then
     kill "${HTTP_PID}" 2>/dev/null || true
     wait "${HTTP_PID}" 2>/dev/null || true
-  fi
-
-  if [[ -n "${NMEA_WRITER_PID:-}" ]] && kill -0 "${NMEA_WRITER_PID}" 2>/dev/null; then
-    kill "${NMEA_WRITER_PID}" 2>/dev/null || true
-    wait "${NMEA_WRITER_PID}" 2>/dev/null || true
   fi
 
   if [[ -n "${SERVICE_PID:-}" ]] && kill -0 "${SERVICE_PID}" 2>/dev/null; then
@@ -127,37 +115,6 @@ start_poseidon_service() {
     fi
     SERVICE_PID=$!
     export POSEIDON_E2E_REUSE_RUNNING="1"
-  fi
-}
-
-start_fake_nmea_writer() {
-  # Keep a fake NMEA DBT feed alive during both backend and UI phases (if the port exists).
-  if [[ -n "${DIAGNOSTICS_FAKE_SERIAL_PORT:-}" && -e "${DIAGNOSTICS_FAKE_SERIAL_PORT}" && "${DIAGNOSTICS_FAKE_SERIAL_PORT}" != "/dev/sonar" ]]; then
-    python3 - <<'PY' &
-import os
-import time
-from pathlib import Path
-
-port = Path(os.environ["DIAGNOSTICS_FAKE_SERIAL_PORT"])
-
-def checksum(payload: str) -> str:
-    cs = 0
-    for ch in payload:
-        cs ^= ord(ch)
-    return f"{cs:02X}"
-
-payload = "SDDBT,30.9,f,9.4,M,5.1,F"
-sentence = f"${payload}*{checksum(payload)}\r\n".encode("ascii")
-
-while True:
-    try:
-        with open(port, "wb", buffering=0) as fd:
-            fd.write(sentence)
-    except Exception:
-        pass
-    time.sleep(1.0)
-PY
-    NMEA_WRITER_PID=$!
   fi
 }
 
@@ -262,7 +219,6 @@ phase_start_ros() {
   start_http_server
   stop_existing_poseidon
   start_poseidon_service
-  start_fake_nmea_writer
   wait_for_ports
   wait_for_ros_nodes
 }
